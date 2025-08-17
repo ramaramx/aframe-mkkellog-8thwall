@@ -4,19 +4,19 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no" />
-  <title>8th Wall + A-Frame + Gaussian Splats</title>
+  <title>8th Wall + A-Frame + Gaussian Splats (Tap to Place)</title>
 
   <!-- 8th Wall runtime -->
   <script
     src="https://apps.8thwall.com/xrweb?appKey=o0lyblFWUfQUrrCu1RfbkDDEH3vFeCIdITiDoct68A7DxfeB5tLWK8AAfti5SEcKYAYfD9"></script>
 
-  <!-- A-Frame -->
+  <!-- A-Frame (8-Frame build) -->
   <script src="//cdn.8thwall.com/web/aframe/8frame-1.5.0.min.js"></script>
 
-  <!-- Expose THREE dari A-Frame ke global (dipakai komponen non-module) -->
+  <!-- Expose THREE dari A-Frame ke global (dipakai skrip non-module) -->
   <script>window.THREE = AFRAME.THREE;</script>
 
-  <!-- Import map agar dependensi 'three' utk viewer ESM konsisten -->
+  <!-- Import map: paksa viewer ESM pakai Three v0.152.2 -->
   <script type="importmap">
   {
     "imports": {
@@ -25,141 +25,210 @@
   }
   </script>
 
-  <!-- Import ESM viewer resmi dan expose ke global -->
+  <!-- Gaussian Splats 3D (ESM) -->
   <script type="module">
     import * as GaussianSplats3D from "https://cdn.jsdelivr.net/npm/@mkkellogg/gaussian-splats-3d@0.4.7/build/gaussian-splats-3d.module.js";
     window.GaussianSplats3D = GaussianSplats3D;
   </script>
 
-  <!-- Komponen A-Frame + integrasi ke pipeline XR8 -->
+  <!-- Komponen gsplat-loader + integrasi XR8 + tap-to-place -->
   <script>
     let sharedViewer = null;
-      let pendingEntities = []; // entity yang init sebelum XR8 siap
+    let pendingEntities = []; // entity yang init sebelum XR8 siap
 
-      AFRAME.registerComponent('gsplat-loader', {
-        schema: {
-          src: { type: 'string' },                         // .ply / .splat / .ksplat
-          position: { type: 'vec3', default: { x: 0, y: 0, z: -1 } },
-          rotation: { type: 'vec3', default: { x: 0, y: 0, z: 0 } }, // derajat
-          scale:    { type: 'vec3', default: { x: 1, y: 1, z: 1 } },
-          pointBudget: { type: 'int',     default: 1800000 },
-          gpuSort:     { type: 'boolean', default: true },  // akan di-override jika SAB off
-          alphaRemoval:{ type: 'number',  default: 0 }      // 0..255
-        },
+    AFRAME.registerComponent('gsplat-loader', {
+      schema: {
+        src: { type: 'string' },                         // .ply / .splat / .ksplat
+        position: { type: 'vec3', default: { x: 0, y: 0, z: -1 } },
+        rotation: { type: 'vec3', default: { x: 0, y: 0, z: 0 } }, // derajat
+        scale: { type: 'vec3', default: { x: 1, y: 1, z: 1 } },
+        pointBudget: { type: 'int', default: 1800000 },
+        gpuSort: { type: 'boolean', default: true },  // akan di-override jika SAB off
+        alphaRemoval: { type: 'number', default: 0 }      // 0..255
+      },
 
-        async init () {
-          // Jika viewer belum siap (XR8 belum loaded), antrekan entity ini
-          if (!sharedViewer) {
-            pendingEntities.push(this);
-            return;
-          }
-          await this.loadSplat();
-        },
+      async init() {
+        if (!sharedViewer) { pendingEntities.push(this); return; }
+        await this.loadSplat();
+      },
 
-        async loadSplat () {
-          const sceneEl = this.el.sceneEl;
+      async loadSplat() {
+        const sceneEl = this.el.sceneEl;
+        await new Promise(r => {
+          if (sceneEl.renderer && sceneEl.camera) return r();
+          sceneEl.addEventListener('render-target-loaded', r, { once: true });
+        });
 
-          // Pastikan renderer & kamera A-Frame siap
-          await new Promise(r => {
-            if (sceneEl.renderer && sceneEl.camera) return r();
-            sceneEl.addEventListener('render-target-loaded', r, { once: true });
-          });
+        const euler = new THREE.Euler(
+          THREE.MathUtils.degToRad(this.data.rotation.x),
+          THREE.MathUtils.degToRad(this.data.rotation.y),
+          THREE.MathUtils.degToRad(this.data.rotation.z),
+          'YXZ'
+        );
+        const quat = new THREE.Quaternion().setFromEuler(euler);
 
-          // Siapkan transform
+        await sharedViewer.addSplatScenes([{
+          path: this.data.src,
+          position: [this.data.position.x, this.data.position.y, this.data.position.z],
+          rotation: [quat.x, quat.y, quat.z, quat.w],
+          scale: [this.data.scale.x, this.data.scale.y, this.data.scale.z],
+          splatAlphaRemovalThreshold: this.data.alphaRemoval
+        }]);
+
+        sharedViewer.setPointBudget && sharedViewer.setPointBudget(this.data.pointBudget);
+      },
+
+      update(oldData) {
+        if (!sharedViewer || !oldData) return;
+        const changed = AFRAME.utils.diff(this.data, oldData);
+        const s = sharedViewer.getSplatScene && sharedViewer.getSplatScene(0);
+        if (!s) return;
+
+        if (changed.position) {
+          s.position.set(this.data.position.x, this.data.position.y, this.data.position.z);
+        }
+        if (changed.rotation) {
           const euler = new THREE.Euler(
             THREE.MathUtils.degToRad(this.data.rotation.x),
             THREE.MathUtils.degToRad(this.data.rotation.y),
             THREE.MathUtils.degToRad(this.data.rotation.z),
             'YXZ'
           );
-          const quat = new THREE.Quaternion().setFromEuler(euler);
-
-          // Muat 1 splat scene
-          await sharedViewer.addSplatScenes([{
-            path: this.data.src,
-            position: [this.data.position.x, this.data.position.y, this.data.position.z],
-            rotation: [quat.x, quat.y, quat.z, quat.w],
-            scale:    [this.data.scale.x, this.data.scale.y, this.data.scale.z],
-            splatAlphaRemovalThreshold: this.data.alphaRemoval
-          }]);
-
-          if (sharedViewer.setPointBudget) {
-            sharedViewer.setPointBudget(this.data.pointBudget);
-          }
-        },
-
-        update (oldData) {
-          if (!sharedViewer || !oldData) return;
-          const changed = AFRAME.utils.diff(this.data, oldData);
-          const s = sharedViewer.getSplatScene && sharedViewer.getSplatScene(0);
-          if (!s) return;
-
-          if (changed.position) {
-            s.position.set(this.data.position.x, this.data.position.y, this.data.position.z);
-          }
-          if (changed.rotation) {
-            const euler = new THREE.Euler(
-              THREE.MathUtils.degToRad(this.data.rotation.x),
-              THREE.MathUtils.degToRad(this.data.rotation.y),
-              THREE.MathUtils.degToRad(this.data.rotation.z),
-              'YXZ'
-            );
-            s.quaternion.setFromEuler(euler);
-          }
-          if (changed.scale) {
-            s.scale.set(this.data.scale.x, this.data.scale.y, this.data.scale.z);
-          }
-          if (changed.pointBudget && sharedViewer.setPointBudget) {
-            sharedViewer.setPointBudget(this.data.pointBudget);
-          }
-          s.updateMatrixWorld && s.updateMatrixWorld(true);
+          s.quaternion.setFromEuler(euler);
         }
-      });
+        if (changed.scale) {
+          s.scale.set(this.data.scale.x, this.data.scale.y, this.data.scale.z);
+        }
+        if (changed.pointBudget && sharedViewer.setPointBudget) {
+          sharedViewer.setPointBudget(this.data.pointBudget);
+        }
+        s.updateMatrixWorld && s.updateMatrixWorld(true);
+      }
+    });
 
-      // Jalankan setelah runtime 8th Wall siap
-      window.addEventListener('xrloaded', async () => {
-        const sceneEl   = document.querySelector('a-scene');
+    // Tap-to-place: pakai XR8.XrController.hitTest(x,y)
+    AFRAME.registerComponent('tap-to-place', {
+      schema: {
+        target: { type: 'selector' }, // entity yang punya gsplat-loader
+        // urutan prioritas jenis hit yang diinginkan
+        types: { type: 'string', default: 'DETECTED_SURFACE,ESTIMATED_SURFACE,FEATURE_POINT' }
+      },
 
-        // Pastikan renderer A-Frame sudah ada
-        await new Promise(r => {
-          if (sceneEl.renderer && sceneEl.camera) return r();
-          sceneEl.addEventListener('render-target-loaded', r, { once: true });
-        });
+      init() {
+        this._onTap = this._onTap.bind(this);
+        // iOS safari nyaman pakai touchend, desktop pakai click
+        window.addEventListener('touchend', this._onTap, { passive: true });
+        window.addEventListener('click', this._onTap);
+      },
 
-        const renderer   = sceneEl.renderer;
-        const camera     = sceneEl.camera;
-        const threeScene = sceneEl.object3D;
+      remove() {
+        window.removeEventListener('touchend', this._onTap);
+        window.removeEventListener('click', this._onTap);
+      },
 
-        // Deteksi apakah SAB bisa dipakai
-        const useSAB = window.crossOriginIsolated === true;
+      _normalizeFromEvent(e) {
+        const t = (e.changedTouches && e.changedTouches[0]) || (e.touches && e.touches[0]) || e;
+        const nx = t.clientX / window.innerWidth;
+        const ny = t.clientY / window.innerHeight;
+        return [nx, ny];
+      },
 
-        // Buat viewer (fallback SAB off kalau tidak isolated)
-        sharedViewer = new GaussianSplats3D.Viewer({
-          selfDrivenMode: false,
-          renderer, camera, threeScene,
-          sharedMemoryForWorkers: useSAB,          // penting untuk error SAB
-          gpuAcceleratedSort:     useSAB && true   // matikan saat SAB off
-        });
+      _pickBestHit(results, wanted) {
+        // pilih sesuai prioritas: DETECTED_SURFACE > ESTIMATED_SURFACE > FEATURE_POINT
+        for (const type of wanted) {
+          const hit = results.find(r => r.type === type);
+          if (hit) return hit;
+        }
+        return results[0];
+      },
 
-        // Modul pipeline 8th Wall untuk update/render tiap frame
-        XR8.addCameraPipelineModules([{
-          name: 'gsplat',
-          onUpdate: () => { sharedViewer && sharedViewer.update(); },
-          onRender: () => { sharedViewer && sharedViewer.render(); }
-        }]);
+      _placeAtFallbackFront(sceneEl) {
+        const cam = sceneEl.camera;
+        const dir = new THREE.Vector3(0, 0, -1).applyQuaternion(cam.quaternion);
+        const pos = cam.position.clone().add(dir.multiplyScalar(1.0)); // ~1m depan
+        // rotasi menghadap kamera (opsional)
+        const yRot = THREE.MathUtils.radToDeg(Math.atan2(cam.position.x - pos.x, cam.position.z - pos.z));
+        return { position: pos, rotationEulerDeg: new THREE.Euler(0, THREE.MathUtils.degToRad(yRot), 0, 'YXZ') };
+      },
 
-        // Muat semua entity yang sudah antre
-        const queue = pendingEntities.slice();
-        pendingEntities.length = 0;
-        for (const comp of queue) {
-          try { await comp.loadSplat(); } catch (e) { console.error(e); }
+      _onTap(e) {
+        if (!this.data.target) return;
+        // kalau XR8 belum siap, abaikan saja
+        if (typeof XR8 === 'undefined' || !XR8.XrController || !XR8.XrController.hitTest) {
+          // fallback sederhana: taruh 1m di depan
+          const { position, rotationEulerDeg } = this._placeAtFallbackFront(this.el.sceneEl);
+          this._applyPlacement(position, rotationEulerDeg);
+          return;
         }
 
-        // Mulai XR
-        XR8.run({ canvas: renderer.domElement });
+        const [nx, ny] = this._normalizeFromEvent(e);
+        const typesWanted = this.data.types.split(',').map(s => s.trim());
+        const results = XR8.XrController.hitTest(nx, ny, typesWanted); // koordinat 0..1
+        // hitTest API: mengembalikan array dengan {type, position{x,y,z}, rotation{x,y,z,w}, distance}. :contentReference[oaicite:1]{index=1}
+
+        if (results && results.length) {
+          const best = this._pickBestHit(results, typesWanted);
+          const p = best.position;
+          const r = best.rotation; // quaternion
+
+          // konversi quat → euler derajat YXZ (supaya cocok schema)
+          const q = new THREE.Quaternion(r.x, r.y, r.z, r.w);
+          const euler = new THREE.Euler().setFromQuaternion(q, 'YXZ');
+          this._applyPlacement(new THREE.Vector3(p.x, p.y, p.z), euler);
+        } else {
+          const { position, rotationEulerDeg } = this._placeAtFallbackFront(this.el.sceneEl);
+          this._applyPlacement(position, rotationEulerDeg);
+        }
+      },
+
+      _applyPlacement(posVec3, euler) {
+        const rotDeg = {
+          x: THREE.MathUtils.radToDeg(euler.x),
+          y: THREE.MathUtils.radToDeg(euler.y),
+          z: THREE.MathUtils.radToDeg(euler.z),
+        };
+        // set ke komponen gsplat-loader → akan mengupdate transform internal viewer
+        this.data.target.setAttribute('gsplat-loader', 'position', `${posVec3.x} ${posVec3.y} ${posVec3.z}`);
+        this.data.target.setAttribute('gsplat-loader', 'rotation', `${rotDeg.x} ${rotDeg.y} ${rotDeg.z}`);
+      }
+    });
+
+    // Jalankan setelah runtime 8th Wall siap
+    window.addEventListener('xrloaded', async () => {
+      const sceneEl = document.querySelector('a-scene');
+
+      await new Promise(r => {
+        if (sceneEl.renderer && sceneEl.camera) return r();
+        sceneEl.addEventListener('render-target-loaded', r, { once: true });
       });
 
+      const renderer = sceneEl.renderer;
+      const camera = sceneEl.camera;
+      const threeScene = sceneEl.object3D;
 
+      const useSAB = window.crossOriginIsolated === true;
+      sharedViewer = new GaussianSplats3D.Viewer({
+        selfDrivenMode: false,
+        renderer, camera, threeScene,
+        sharedMemoryForWorkers: useSAB,
+        gpuAcceleratedSort: useSAB && true
+      });
+
+      XR8.addCameraPipelineModules([{
+        name: 'gsplat',
+        onUpdate: () => { sharedViewer && sharedViewer.update(); },
+        onRender: () => { sharedViewer && sharedViewer.render(); }
+      }]);
+
+      // Muat entity yang sudah antre
+      const queue = pendingEntities.slice();
+      pendingEntities.length = 0;
+      for (const comp of queue) {
+        try { await comp.loadSplat(); } catch (err) { console.error(err); }
+      }
+
+      XR8.run({ canvas: renderer.domElement });
+    });
   </script>
 
   <style>
@@ -183,9 +252,14 @@
 </head>
 
 <body>
-  <a-scene xrweb embedded renderer="colorManagement:true">
-    <!-- SPLAT 1m di depan kamera -->
-    <a-camera></a-camera>
+  <a-scene   
+  xrextras-runtime-error
+  renderer="colorManagement: true"
+  xrweb="allowedDevices: any"
+  tap-to-place="target:#mySplat">
+    <!-- SPLAT (ganti path file sesuai aset kamu) -->
+    <a-camera id="camera" position="0 8 8" raycaster="objects: .cantap" cursor="fuse: false; rayOrigin: mouse;">
+    </a-camera>
     <a-entity id="mySplat" gsplat-loader="
       src: flower.ply;
       position: 0 0 -1;
@@ -200,9 +274,7 @@
     <a-entity camera wasd-controls-enabled="false"></a-entity>
   </a-scene>
 
-  <div class="hint">Tip: ubah skala/rotasi dari atribut <code>gsplat-loader</code>. File:
-    <code>assets/scene.ksplat</code>
-  </div>
+  <div class="hint">Tap untuk menaruh model di permukaan. (Hit-test via XR8) </div>
 </body>
 
 </html>
