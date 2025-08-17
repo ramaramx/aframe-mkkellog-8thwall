@@ -12,6 +12,8 @@
 
   <!-- A-Frame (8-Frame build) -->
   <script src="//cdn.8thwall.com/web/aframe/8frame-1.5.0.min.js"></script>
+  <script async src="https://unpkg.com/es-module-shims@1.9.0/dist/es-module-shims.js"></script>
+
 
   <!-- Expose THREE dari A-Frame ke global (dipakai skrip non-module) -->
   <script>window.THREE = AFRAME.THREE;</script>
@@ -265,7 +267,7 @@
       position: 0 0 -1;
       rotation: 0 0 0;
       scale: 1 1 1;
-      pointBudget: 1800000;
+      pointBudget: 1200000;
       gpuSort: true;
       alphaRemoval: 0;">
     </a-entity>
